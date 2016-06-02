@@ -1,0 +1,82 @@
+#!/Users/jeremyraines/.rbenv/shims/ruby
+
+# [0]
+# http://devblog.avdi.org/2009/10/25/iso8601-dates-in-ruby/
+# Must require time to use iso8601 method
+require 'time'
+require 'csv'
+
+class Fixnum
+  SECONDS_IN_DAY = 24 * 60 * 60
+
+  def days
+    self * SECONDS_IN_DAY
+  end
+
+  def ago
+    Time.now - self
+  end
+end
+
+# '%aI' is the commit time in strict iso8601 format
+# adding the --shortstat flag produces output like:
+#
+###################################################
+# 2 files changed, 38 insertions(+), 1 deletion(-)
+# 2016-05-04T18:33:03-07:00
+#
+# {next 2-line record}
+##################################################
+#
+# So we need to use awk to turn this into rows.
+# RS is the row separator, which here is a blank line
+# FS is the field separator, which is a single newline
+# For each "row" (2 line record) print it out, seperated by semicolons
+`git log --shortstat --pretty='%aI' | awk -v RS='' -v FS='\\n' '{ print $2,";",$1; }' > /tmp/worklog`
+
+
+dates = {}
+
+# the row_sep: :auto option will ignore characters that are disallowed in
+# quoted fields, see:
+# http://stackoverflow.com/questions/11548637/csv-unquoted-fields-do-not-allow-r-or-n-line-2
+CSV.foreach('/tmp/worklog', row_sep: :auto, col_sep: ";") do |row|
+
+  datetime_string, commit_stats = row.map(&:strip)
+
+  # Some commits have missing or weird (year 1900) dates
+  next if datetime_string.length == 0
+
+  # [0]
+  date = Time.iso8601(datetime_string).to_date.to_s
+
+  dates[date] ||= {}
+
+  # first number is files changed, second is lines added, third lines deleted
+  # `scan` is a way to find all occurences of a regex
+  # http://stackoverflow.com/questions/80357/match-all-occurrences-of-a-regex
+  fc, a, d = commit_stats.scan(/(\d+)/).map(&:first).map(&:to_i)
+
+  dates[date][:commits] ||= []
+  dates[date][:commits] << { files_changed: fc, added: a, deleted: d }
+end
+
+def commits_reducer(memo, key, val)
+  memo[:commits] = val.count
+  memo[:added]   = val.reduce(0){ |memo, v| memo += (v[:added] || 0) }
+  memo[:deleted] = val.reduce(0){ |memo, v| memo += (v[:deleted] || 0) }
+  memo
+end
+
+
+rows = dates.map do |date,commits|
+         #http://stackoverflow.com/questions/13882956/reduce-hash-values
+         summary = commits.reduce({}){ |memo, (k, v)| commits_reducer(memo, k, v)}
+         [date, summary[:commits], summary[:added], summary[:deleted]].join(",")
+       end
+
+puts "Date,Commits,Lines Added,Lines Deleted"
+rows.each do |r|
+  puts r
+end
+
